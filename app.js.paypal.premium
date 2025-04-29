@@ -1,0 +1,1233 @@
+import React, { useState, useEffect, useRef, useCallback } from "react"; // Added useCallback
+import "./App.css";
+import { initializeApp } from "firebase/app";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithPopup,
+  sendPasswordResetEmail
+} from "firebase/auth";
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  updateDoc,
+  serverTimestamp,
+  Timestamp // Import Timestamp for date comparisons if needed
+} from "firebase/firestore";
+
+// Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyA3ecMiFFfSDrVOV_Exjpdiw8ceVcS434c",
+  authDomain: "fir-resume-app.firebaseapp.com",
+  projectId: "fir-resume-app",
+  storageBucket: "fir-resume-app.firebasestorage.app",
+  messagingSenderId: "337503710284",
+  appId: "1:337503710284:web:65ade82b8335e491e4d8e9"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const googleProvider = new GoogleAuthProvider();
+
+// PayPal SDK script URL - *** REPLACE WITH YOUR CLIENT ID ***
+const PAYPAL_SCRIPT_URL = "https://www.paypal.com/sdk/js?client-id=YOUR_PAYPAL_CLIENT_ID&currency=USD";
+
+// Payment constants
+const RESUME_PRICE = 9.99; // Standard plan price
+const PREMIUM_PRICE = 19.99; // Premium plan price
+const CURRENCY_CODE = 'USD'; // Currency for PayPal
+
+// --- Component Imports / Definitions ---
+
+// NEW: Top Ribbon Component
+const TopRibbon = () => {
+  return (
+    <div className="top-ribbon">
+      🚀 Change-CV to get placed immediately! 🚀
+    </div>
+  );
+};
+
+const Header = ({ user, onLogout, onLoginClick }) => {
+  return (
+    <header className="site-header">
+      <div className="logo">
+        <h1>change-cv.com</h1>
+      </div>
+      <nav>
+        {user ? (
+          <div className="user-nav">
+            <span className="welcome-message">Welcome, {user.email}</span>
+            <button onClick={onLogout} className="logout-btn">Logout</button>
+          </div>
+        ) : (
+          <button onClick={onLoginClick} className="login-btn">Login</button>
+        )}
+      </nav>
+    </header>
+  );
+};
+
+const Hero = ({ user, onGetStartedClick }) => {
+  return (
+    <section className="hero">
+      <div className="hero-content">
+        <h1>AI-Powered Resume Builder</h1>
+        <h2>Land More Interviews with ATS-Optimized Resumes</h2>
+        <p>Create a tailored resume in minutes that passes through Applicant Tracking Systems and impresses hiring managers.</p>
+        <button className="cta-button" onClick={onGetStartedClick}>
+          {user ? "Go to App" : "Get Started"}
+        </button>
+      </div>
+      <div className="hero-image">
+        <img src="/images/change-cv.jpg" alt="Resume builder showing CV transformation" />
+      </div>
+    </section>
+  );
+};
+
+const BeatTheBots = () => {
+  // ... (Keep existing component code) ...
+   return (
+    <section className="beat-the-bots info-card">
+      <h2>Beat the Bots & Get Noticed!</h2>
+      <p>Did you know many companies use Applicant Tracking Systems (ATS) to scan resumes before a human ever sees them? These systems look for specific keywords and formats related to the job description. A generic resume might get automatically rejected!</p>
+      <p>This AI Resume Generator helps you create <strong>ATS-compliant resumes tailored specifically to the job you're applying for.</strong> By aligning your skills and experience with the employer's requirements, you significantly increase your chances of:</p>
+      <ul>
+        <li>Passing the initial ATS screening.</li>
+        <li>Getting your resume in front of a hiring manager.</li>
+        <li>Receiving that important callback!</li>
+      </ul>
+      <p><em>Remember to <strong>update your resume details for each job application</strong> using the provided job description for the best results.</em></p>
+    </section>
+  );
+};
+
+const HowToUse = () => {
+  // ... (Keep existing component code, ensure step 7 mentions payment) ...
+   return (
+    <section className="how-to-use info-card">
+      <h2>How to Use This App</h2>
+      <ol>
+        <li><strong>Personal Details:</strong> Fill in your <code>Name</code>, <code>Email</code>, <code>Phone</code>, and optionally your <code>LinkedIn</code> profile URL.</li>
+        <li><strong>Education:</strong> Enter your degree(s), institution(s), location, completion year(s), etc. List each qualification on a new line.</li>
+        <li><strong>Experience:</strong> For each role, provide <code>Company Name</code>, <code>Job Title</code>, <code>Location</code>, <code>Dates</code>, and <code>Key Responsibilities & Achievements</code> (use bullet points). Enter each job as a separate block.</li>
+        <li><strong>Skills:</strong> List relevant technical and soft skills, separated clearly (e.g., with commas).</li>
+        <li><strong>Job Description:</strong> <strong>Paste the entire job description</strong> here. This is essential for tailoring.</li>
+        <li><strong>Optional Fields:</strong> Add <code>Certifications</code>, <code>Languages</code>, or <code>Extracurricular</code> activities if relevant.</li>
+        <li><strong>Make Payment:</strong> Choose a plan and complete the payment to unlock the AI tools.</li> {/* Updated Step */}
+        <li><strong>Generate:</strong> Click "Generate Resume".</li>
+        <li><strong>Review & Edit:</strong> Carefully check and modify the generated resume in the preview section below.</li>
+        <li><strong>Download:</strong> Click "Download PDF" when ready.</li>
+      </ol>
+    </section>
+  );
+};
+
+// Pricing Component (Ensure CSS exists for these classes)
+const PricingSection = ({ onSelectPlan }) => {
+  // ... (Keep existing component code) ...
+   return (
+    <section className="pricing-section"> {/* Add CSS for .pricing-section */}
+      <h2>Choose Your Resume Plan</h2>
+      <div className="pricing-cards"> {/* Add CSS for .pricing-cards */}
+        {/* Standard Card */}
+        <div className="pricing-card"> {/* Add CSS for .pricing-card */}
+          <h3>Standard Resume</h3>
+          <div className="price">${RESUME_PRICE.toFixed(2)}</div> {/* Add CSS for .price */}
+          <ul>
+            <li>ATS-optimized formatting</li>
+            <li>Tailored to job description</li>
+            <li>1 resume generation & download</li> {/* Clarified limit */}
+            <li>Basic editing tools</li>
+          </ul>
+          <button onClick={() => onSelectPlan('standard')} className="cta-button">
+            Select Plan
+          </button>
+        </div>
+        {/* Premium Card */}
+        <div className="pricing-card premium"> {/* Add CSS for .premium */}
+          <div className="popular-tag">Most Popular</div> {/* Add CSS for .popular-tag */}
+          <h3>Premium Resume</h3>
+          <div className="price">${PREMIUM_PRICE.toFixed(2)}</div>
+          <ul>
+            <li>Everything in Standard</li>
+            <li>Unlimited resume generations</li>
+            <li>Unlimited downloads</li>
+            <li>Multiple resume versions (Save/Load feature needed)</li>
+            <li>Advanced editing tools</li>
+            <li>LinkedIn profile optimization tips</li>
+          </ul>
+          <button onClick={() => onSelectPlan('premium')} className="cta-button premium-btn"> {/* Add CSS for .premium-btn */}
+            Select Plan
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+};
+
+// PayPal Button Component (Using Manual Script Loading)
+const PayPalButton = ({ amount, onSuccess, onError, onCancel, planType }) => {
+  const paypalRef = useRef();
+
+  useEffect(() => {
+    // Prevent duplicate script loading
+    if (window.paypal) {
+        // If already loaded, render buttons immediately
+         renderPayPalButtons();
+         return;
+    }
+
+    const script = document.createElement('script');
+    script.src = PAYPAL_SCRIPT_URL; // Use the constant defined earlier
+    script.async = true;
+    script.setAttribute('data-sdk-integration-source', 'react-app'); // Helpful for PayPal analytics
+
+    script.onload = () => {
+        console.log("PayPal SDK loaded.");
+        renderPayPalButtons();
+    };
+
+    script.onerror = (err) => {
+      console.error('Failed to load PayPal SDK:', err);
+      onError(new Error('Failed to load PayPal SDK. Please check your internet connection or try again later.'));
+    };
+
+    document.body.appendChild(script);
+
+    // Function to render buttons
+    const renderPayPalButtons = () => {
+         if (!paypalRef.current) {
+            console.warn("PayPal container ref not available yet.");
+            return; // Exit if ref is not ready
+         }
+         try {
+             window.paypal
+             .Buttons({
+                 style: { // Basic styling options
+                     layout: 'vertical',
+                     color: 'blue',
+                     shape: 'rect',
+                     label: 'pay',
+                 },
+                 createOrder: (data, actions) => {
+                     console.log("Creating order with amount:", amount);
+                     return actions.order.create({
+                         purchase_units: [
+                             {
+                                 description: `${planType === 'premium' ? 'Premium' : 'Standard'} Resume Plan Subscription`,
+                                 amount: {
+                                     currency_code: CURRENCY_CODE,
+                                     value: amount.toFixed(2), // Ensure 2 decimal places
+                                 },
+                             },
+                         ],
+                         application_context: {
+                             shipping_preference: 'NO_SHIPPING', // Important for digital goods
+                         }
+                     });
+                 },
+                 onApprove: async (data, actions) => {
+                     console.log("Payment approved. Capturing order...", data);
+                     try {
+                         const order = await actions.order.capture();
+                         console.log("Order captured:", order);
+                         onSuccess(order); // Pass the captured order details back
+                     } catch (captureError) {
+                         console.error('Error capturing PayPal order:', captureError);
+                         onError(captureError);
+                     }
+                 },
+                 onError: (err) => {
+                     console.error('PayPal Button Error:', err);
+                     onError(err); // Pass the error back
+                 },
+                 onCancel: () => {
+                     console.log('Payment cancelled by user.');
+                     onCancel(); // Trigger the cancel handler
+                 },
+             })
+             .render(paypalRef.current) // Render into the ref div
+             .catch(renderError => { // Catch potential rendering errors
+                 console.error("Failed to render PayPal buttons:", renderError);
+                 onError(new Error("Could not display PayPal buttons. Please refresh the page."));
+             });
+         } catch (initError) {
+             console.error("Error initializing PayPal Buttons:", initError);
+              onError(new Error("Failed to initialize PayPal payment."));
+         }
+    };
+
+    // Cleanup function
+    return () => {
+        // Find and remove the script if it exists
+        const scripts = document.querySelectorAll(`script[src="${PAYPAL_SCRIPT_URL}"]`);
+        scripts.forEach(s => {
+             if(document.body.contains(s)) {
+                document.body.removeChild(s);
+             }
+        });
+        // Optional: Clean up PayPal SDK global object if needed, though usually not necessary
+        // delete window.paypal;
+        console.log("PayPal script cleanup attempted.");
+    };
+  }, [amount, onSuccess, onError, onCancel, planType]); // Rerun effect if these change
+
+  return (
+    // Container for PayPal buttons
+    // Add CSS for .paypal-button-container if needed for spacing/alignment
+    <div className="paypal-button-container">
+      <div ref={paypalRef}></div> {/* PayPal buttons will render here */}
+    </div>
+  );
+};
+
+const Footer = () => {
+  // ... (Keep existing component code) ...
+  return (
+    <footer className="site-footer">
+      <div className="footer-content">
+        <div className="footer-logo">
+          <h2>change-cv.com</h2>
+          <p>AI-powered resume builder</p>
+        </div>
+        <div className="footer-links">
+          <div className="link-column">
+            <h3>Company</h3>
+            <ul>
+              <li><a href="/about">About Us</a></li>
+              <li><a href="/contact">Contact</a></li>
+            </ul>
+          </div>
+          <div className="link-column">
+            <h3>Legal</h3>
+            <ul>
+              <li><a href="/privacy">Privacy Policy</a></li>
+              <li><a href="/terms">Terms of Service</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div className="footer-bottom">
+        <p>&copy; {new Date().getFullYear()} change-cv.com. All rights reserved.</p>
+        <p className="footer-disclaimer">
+          Disclaimer: No data is stored by the application locally. The application is hosted in AWS US-East-1 (N. Virginia).
+        </p>
+      </div>
+    </footer>
+  );
+};
+
+// --- Main App Component ---
+
+function App() {
+    const initialFormData = {
+        name: "", email: "", phone: "", linkedin: "",
+        education: "", experience: "", certifications: "", skills: "",
+        languages: "", extracurricular: "", jobDescription: "",
+    };
+
+    // Form/UI State
+    const [formData, setFormData] = useState(initialFormData);
+    const [editedData, setEditedData] = useState(null);
+    const [stage, setStage] = useState("form"); // 'form', 'preview'
+    const [loading, setLoading] = useState(false); // General loading for API calls etc.
+    const [error, setError] = useState(""); // For general app errors (API, etc.)
+    const [successMessage, setSuccessMessage] = useState("");
+
+    // Auth State
+    const [user, setUser] = useState(null);
+    const [authLoading, setAuthLoading] = useState(true); // Loading auth status initially
+    const [authError, setAuthError] = useState(""); // For login/register errors
+    const [authMode, setAuthMode] = useState("login"); // 'login', 'register', 'resetPassword'
+    const [authFormData, setAuthFormData] = useState({ email: "", password: "" });
+
+    // View State
+    const [view, setView] = useState("landing"); // 'landing', 'auth', 'payment', 'app'
+
+    // Payment State
+    const [selectedPlan, setSelectedPlan] = useState(null); // 'standard' or 'premium'
+    const [paymentCompleted, setPaymentCompleted] = useState(false); // Has user paid successfully?
+    const [subscriptionData, setSubscriptionData] = useState(null); // Store details from Firestore
+    const [paymentError, setPaymentError] = useState(""); // For payment-specific errors
+    const [paymentLoading, setPaymentLoading] = useState(false); // Loading during payment processing
+
+
+    // --- Firestore Interaction Logic ---
+
+    // Check user's subscription status from Firestore
+    const checkUserSubscription = useCallback(async (userId) => {
+        if (!userId) return;
+        setPaymentLoading(true); // Indicate loading subscription status
+        setPaymentError("");
+        try {
+            const userDocRef = doc(db, "users", userId);
+            const userDoc = await getDoc(userDocRef);
+
+            if (userDoc.exists()) {
+                const userData = userDoc.data();
+                // Check if subscription exists and is active
+                // Add more checks here if needed (e.g., expiration date for premium)
+                if (userData.subscription && userData.subscription.active) {
+                    console.log("Active subscription found:", userData.subscription);
+                    setSubscriptionData(userData.subscription);
+                    setPaymentCompleted(true);
+                    // If user somehow landed on payment page, redirect to app
+                    if (view === 'payment') {
+                         setView('app');
+                    } else if (view !== 'app' && view !== 'auth' && view !== 'landing') {
+                         // If user logged in and has subscription, ensure they are in app view
+                         setView('app');
+                    }
+                } else {
+                    console.log("No active subscription found for user:", userId);
+                    setPaymentCompleted(false);
+                    setSubscriptionData(null);
+                    // If user is trying to access app, redirect to payment
+                    if (view === 'app') {
+                        setView('payment');
+                    }
+                }
+            } else {
+                console.log("User document not found, creating one for:", userId);
+                // Create a new user document if it doesn't exist (e.g., after Google Sign-In)
+                await setDoc(userDocRef, {
+                    email: auth.currentUser?.email || 'N/A', // Get email if possible
+                    createdAt: serverTimestamp(),
+                    subscription: { active: false, plan: null } // Initial state
+                });
+                setPaymentCompleted(false);
+                setSubscriptionData(null);
+                if (view === 'app') {
+                    setView('payment'); // Redirect new user to payment if they try app first
+                }
+            }
+        } catch (err) {
+            console.error("Error checking/creating user subscription:", err);
+            setError("Error checking your subscription status. Please refresh the page."); // Use general error state
+            setPaymentCompleted(false); // Assume no payment on error
+            setSubscriptionData(null);
+        } finally {
+             setPaymentLoading(false);
+        }
+    }, [view]); // Dependency on 'view' to redirect correctly
+
+    // --- Effects ---
+    useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+            setUser(currentUser); // Update user state
+            if (currentUser) {
+                 console.log("Auth State Changed: User logged in", currentUser.uid);
+                // User is signed in, check their subscription immediately
+                checkUserSubscription(currentUser.uid);
+            } else {
+                console.log("Auth State Changed: User logged out");
+                // User is signed out
+                setPaymentCompleted(false); // Reset payment status
+                setSubscriptionData(null);
+                setSelectedPlan(null);
+                // Redirect to landing if they were in a protected view
+                if (view === 'app' || view === 'payment') {
+                    setView("landing");
+                }
+            }
+            setAuthLoading(false); // Auth check complete
+        });
+        return () => unsubscribe(); // Cleanup on unmount
+    }, [checkUserSubscription, view]); // Rerun if view changes OR checkUserSubscription changes
+
+
+    // --- Auth Handlers ---
+    const handleAuthChange = (e) => {
+        setAuthFormData({ ...authFormData, [e.target.name]: e.target.value });
+        setAuthError("");
+        setSuccessMessage(""); // Clear messages on input change
+    };
+
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        setAuthLoading(true); setAuthError(""); setSuccessMessage("");
+        try {
+            await signInWithEmailAndPassword(auth, authFormData.email, authFormData.password);
+            setSuccessMessage("Successfully logged in! Checking subscription...");
+            // onAuthStateChanged will trigger subscription check and view update
+        } catch (err) {
+            setAuthError("Login failed: " + err.message.replace('Firebase: ', ''));
+            setAuthLoading(false); // Stop loading on error
+        }
+        // No finally block needed here, loading stops on error or via onAuthStateChanged completion
+    };
+
+    const handleRegister = async (e) => {
+        e.preventDefault();
+        setAuthLoading(true); setAuthError(""); setSuccessMessage("");
+        try {
+            const userCredential = await createUserWithEmailAndPassword(auth, authFormData.email, authFormData.password);
+            console.log("User registered:", userCredential.user.uid);
+            // Create user document in Firestore IMMEDIATELY after registration
+            await setDoc(doc(db, "users", userCredential.user.uid), {
+                email: authFormData.email,
+                createdAt: serverTimestamp(),
+                subscription: { active: false, plan: null } // Initial state
+            });
+            console.log("Firestore document created for new user.");
+            setSuccessMessage("Account created successfully! Redirecting...");
+             // onAuthStateChanged will handle the rest (subscription check -> payment view)
+        } catch (err) {
+            setAuthError("Registration failed: " + err.message.replace('Firebase: ', ''));
+            setAuthLoading(false); // Stop loading on error
+        }
+    };
+
+    const handleResetPassword = async (e) => { /* ... (Keep existing handler) ... */
+         e.preventDefault();
+        setAuthLoading(true); setAuthError(""); setSuccessMessage("");
+        if (!authFormData.email) {
+            setAuthError("Please enter your email address");
+            setAuthLoading(false); return;
+        }
+        try {
+            await sendPasswordResetEmail(auth, authFormData.email);
+            setSuccessMessage("Password reset email sent! Please check your inbox.");
+            setAuthMode("login"); // Return to login after sending
+        } catch (err) {
+            setAuthError("Password reset failed: " + err.message.replace('Firebase: ', ''));
+        } finally {
+            setAuthLoading(false);
+        }
+    };
+
+    const handleGoogleSignIn = async () => {
+        setAuthLoading(true); setAuthError(""); setSuccessMessage("");
+        try {
+            const result = await signInWithPopup(auth, googleProvider);
+            const user = result.user;
+            console.log("Google Sign-In successful:", user.uid);
+            // Check if user document exists, if not create one (Firestore check moved to onAuthStateChanged/checkUserSubscription)
+            // The checkUserSubscription function called via onAuthStateChanged will handle doc creation if needed.
+            setSuccessMessage("Successfully logged in with Google! Checking subscription...");
+        } catch (err) {
+            setAuthError("Google sign-in failed: " + err.message.replace('Firebase: ', ''));
+             setAuthLoading(false); // Stop loading on error
+        }
+    };
+
+    const handleLogout = async () => {
+        setError(""); setSuccessMessage(""); // Clear app messages
+        try {
+            await signOut(auth);
+            console.log("User logged out.");
+            // Reset necessary states - onAuthStateChanged handles view and payment status resets
+            setFormData(initialFormData);
+            setEditedData(null);
+            setStage("form");
+            // Explicitly set view to landing on logout click
+            setView("landing");
+        } catch (err) {
+            setError("Logout failed: " + err.message);
+        }
+    };
+
+    // --- Payment Handlers ---
+    const handleSelectPlan = (planType) => {
+        setSelectedPlan(planType);
+        setPaymentError(""); // Clear previous payment errors
+        // Automatically move to payment view if user is logged in
+        if (user) {
+            setView("payment");
+        } else {
+            // If user isn't logged in, prompt them to log in/register first
+            setView("auth");
+            setAuthError("Please log in or register to select a plan.");
+        }
+    };
+
+    // Called by PayPalButton component on successful payment capture
+    const handlePaymentSuccess = async (paymentDetails) => {
+        if (!user) {
+            setPaymentError("User not logged in. Cannot process payment.");
+            return;
+        }
+         if (!selectedPlan) {
+             setPaymentError("No plan selected. Cannot process payment.");
+             return;
+         }
+
+        console.log("Processing successful payment:", paymentDetails);
+        setPaymentLoading(true);
+        setPaymentError("");
+        setSuccessMessage("Payment successful! Updating your subscription...");
+
+        try {
+            // Prepare subscription data based on the selected plan
+            const planType = selectedPlan;
+            const amount = planType === 'premium' ? PREMIUM_PRICE : RESUME_PRICE;
+            const paymentId = paymentDetails.id; // PayPal order ID
+
+            const newSubscriptionData = {
+                active: true,
+                plan: planType,
+                amount: amount,
+                currency: CURRENCY_CODE,
+                paymentId: paymentId, // Store PayPal Order ID
+                payerId: paymentDetails.payer?.payer_id || null, // Store Payer ID if available
+                purchaseTime: paymentDetails.create_time || new Date().toISOString(), // From PayPal or current time
+                updatedAt: serverTimestamp(), // Firestore server timestamp
+                // Set usage count for standard plan, leave undefined for premium (unlimited)
+                ...(planType === 'standard' && { usageCount: 0 }),
+                 // Add expiration logic here if premium has an expiration
+                 // expiresAt: planType === 'premium' ? calculateExpiration() : null,
+            };
+
+            // Update user's document in Firestore
+            const userDocRef = doc(db, "users", user.uid);
+            await updateDoc(userDocRef, {
+                subscription: newSubscriptionData,
+                lastUpdatedAt: serverTimestamp() // Update main doc timestamp too
+            });
+            console.log("Firestore subscription updated successfully.");
+
+            // Update local state
+            setSubscriptionData(newSubscriptionData);
+            setPaymentCompleted(true);
+            setSuccessMessage(`Payment successful! Your ${planType} plan is now active. Redirecting to app...`);
+
+            // Redirect to the main app view
+            setView("app");
+
+        } catch (err) {
+            console.error("Error updating Firestore after payment:", err);
+            setPaymentError("Payment was successful, but failed to update your subscription. Please contact support with payment ID: " + paymentDetails.id);
+            // Keep user on payment page to show error
+        } finally {
+            setPaymentLoading(false);
+        }
+    };
+
+    // Called by PayPalButton component on error
+    const handlePaymentError = (error) => {
+        console.error("PayPal payment error:", error);
+        // Try to get a meaningful error message
+        const message = error?.message || "An unexpected error occurred during payment.";
+        setPaymentError(`Payment failed: ${message}. Please check your details or try again.`);
+        setPaymentLoading(false); // Ensure loading stops
+    };
+
+    // Called by PayPalButton component when user cancels
+    const handlePaymentCancel = () => {
+        console.log("Payment cancelled.");
+        setPaymentError("Payment cancelled. You can try again whenever you're ready.");
+         setPaymentLoading(false); // Ensure loading stops
+    };
+
+    // --- Form Handlers ---
+    const handleChange = (e) => {
+        setFormData({ ...formData, [e.target.name]: e.target.value });
+    };
+
+    const handleEditedChange = (e) => {
+        setEditedData({ ...editedData, [e.target.name]: e.target.value });
+    };
+
+    const handleReset = () => {
+        setFormData(initialFormData);
+        setEditedData(null);
+        setStage("form"); // Reset stage within the app view
+        setError("");
+        setSuccessMessage("");
+        setLoading(false);
+    };
+
+    // --- API Call Handlers (Resume Generation/Download) ---
+    const handleGenerateResume = async () => {
+        setError(""); setSuccessMessage(""); // Clear messages
+
+        // 1. Check login status
+        if (!user) {
+             setError("Please log in to generate a resume.");
+             setView("auth");
+             return;
+        }
+
+        // 2. Check payment status
+        if (!paymentCompleted || !subscriptionData?.active) {
+            setError("An active subscription is required to generate a resume.");
+            setView("payment"); // Redirect to payment page
+            return;
+        }
+
+        // 3. Check usage for standard plan
+         if (subscriptionData.plan === 'standard') {
+            const currentUsage = subscriptionData.usageCount || 0;
+            if (currentUsage >= 1) { // Standard allows 1 generation
+                setError("Your Standard plan allows only 1 resume generation. Please upgrade to Premium for unlimited generations.");
+                setView("payment"); // Redirect to allow upgrade/repurchase?
+                return;
+            }
+         }
+
+        // 4. Validate form input
+        if (!formData.name || !formData.jobDescription) {
+            setError("Please provide at least your Name and the Job Description.");
+            return; // Stay on form page
+        }
+
+        setLoading(true); // Start loading indicator
+
+        try {
+             // 5. Update usage count in Firestore BEFORE calling API (for standard plan)
+             let updatedSubData = subscriptionData; // For local state update
+             if (subscriptionData.plan === 'standard') {
+                const userDocRef = doc(db, "users", user.uid);
+                const newUsageCount = (subscriptionData.usageCount || 0) + 1;
+                await updateDoc(userDocRef, {
+                    "subscription.usageCount": newUsageCount,
+                    "subscription.lastUsedAt": serverTimestamp() // Track last usage
+                });
+                console.log("Standard plan usage count updated in Firestore.");
+                 // Update local state immediately
+                 updatedSubData = { ...subscriptionData, usageCount: newUsageCount };
+                 setSubscriptionData(updatedSubData);
+             }
+
+
+            // 6. Call resume generation API
+            console.log("Calling resume generation API...");
+            const response = await fetch("https://2no2a0hmtd.execute-api.us-east-1.amazonaws.com/dev/resume-view2", { // Replace if needed
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(formData),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            console.log("Resume generation successful.");
+
+            // 7. Format and set data
+            const formattedData = { /* ... (Keep existing formatting) ... */
+                 ...data,
+                skills: Array.isArray(data.skills) ? data.skills : (data.skills ? String(data.skills).split(/,|\n/).map(s => s.trim()).filter(Boolean) : []),
+                experience: Array.isArray(data.experience) ? data.experience : (data.experience ? String(data.experience).split('\n\n---\n\n') : []),
+                education: Array.isArray(data.education) ? data.education : (data.education ? String(data.education).split('\n').map(s => s.trim()).filter(Boolean) : []),
+                certifications: Array.isArray(data.certifications) ? data.certifications : (data.certifications ? String(data.certifications).split('\n').map(s => s.trim()).filter(Boolean) : []),
+                languages: Array.isArray(data.languages) ? data.languages : (data.languages ? String(data.languages).split(/,|\n/).map(s => s.trim()).filter(Boolean) : []),
+                extracurricular: Array.isArray(data.extracurricular) ? data.extracurricular : (data.extracurricular ? String(data.extracurricular).split('\n').map(s => s.trim()).filter(Boolean) : []),
+            };
+
+            setEditedData(formattedData);
+            setStage("preview"); // Move to preview stage
+            setSuccessMessage("✅ Resume generated successfully! Review and edit below.");
+
+        } catch (err) {
+            console.error("Resume generation failed:", err);
+            setError(`Resume generation failed: ${err.message}. Please check your input or try again.`);
+            setEditedData(null); // Clear data on error
+            setStage("form"); // Stay on form stage on error
+        } finally {
+            setLoading(false); // Stop loading indicator
+        }
+    };
+
+    const handleDownloadPDF = async () => {
+         setError(""); setSuccessMessage(""); // Clear messages
+
+         // 1. Check login status
+         if (!user) {
+              setError("Please log in to download the resume.");
+              setView("auth");
+              return;
+         }
+
+         // 2. Check payment status (redundant if generation required payment, but good practice)
+        if (!paymentCompleted || !subscriptionData?.active) {
+            setError("An active subscription is required to download the resume.");
+            setView("payment");
+            return;
+        }
+
+        // 3. Check if resume data exists
+        if (!editedData) {
+            setError("No resume data available to download. Please generate a resume first.");
+            setStage("form"); // Go back to form
+            return;
+        }
+
+         // 4. Check download limits (Only relevant if Premium allows multiple downloads and Standard only one, which is tied to generation)
+         // For premium, downloads are unlimited. For standard, the generation check already limited it.
+         // If download itself consumed a separate credit, logic would go here.
+
+        setLoading(true); // Start loading
+
+        try {
+            console.log("Calling PDF download API...");
+            // Ensure experience is sent correctly
+            const dataToSend = {
+                ...editedData,
+                experience: typeof editedData.experience === 'string' ? editedData.experience :
+                            (Array.isArray(editedData.experience) ? JSON.stringify(editedData.experience) : '') // Or format as backend expects
+            };
+
+            // Call PDF generation API
+            const response = await fetch("https://e73kxnqelj.execute-api.us-east-1.amazonaws.com/dev/resume-pdf2", { // Replace if needed
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(dataToSend),
+            });
+
+            if (!response.ok) {
+                let errorData; try { errorData = await response.json(); } catch (e) { /* ignore */ }
+                throw new Error(errorData?.error || `PDF Generation failed with status: ${response.status}`);
+            }
+
+            // Process blob and trigger download
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            const safeName = editedData.name ? editedData.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'resume';
+            a.download = `${safeName}_resume_${subscriptionData?.plan || 'standard'}.pdf`; // Add plan to filename
+            document.body.appendChild(a); a.click();
+            window.URL.revokeObjectURL(url); a.remove();
+            console.log("PDF download successful.");
+            setSuccessMessage("✅ PDF downloaded successfully!");
+
+        } catch (err) {
+            console.error("PDF download failed:", err);
+            setError(`PDF download failed: ${err.message}.`);
+        } finally {
+            setLoading(false); // Stop loading
+        }
+    };
+
+    // --- Render Helpers ---
+    const renderTextArea = (fieldName, rows = 3) => { /* ... (Keep existing helper) ... */
+         let value = editedData?.[fieldName];
+        if (Array.isArray(value)) {
+            value = (fieldName === 'skills' || fieldName === 'languages') ? value.join(", ") : value.join("\n");
+        }
+        const displayValue = (typeof value === 'string' || typeof value === 'number') ? value : '';
+
+        return (
+            <textarea
+                name={fieldName}
+                value={displayValue}
+                onChange={handleEditedChange}
+                rows={rows}
+                className="edit-area"
+                placeholder={fieldName.charAt(0).toUpperCase() + fieldName.slice(1)}
+                disabled={loading || paymentLoading} // Disable while loading payment too
+            />
+        );
+     };
+    const renderExperienceEditor = () => { /* ... (Keep existing helper) ... */
+         let experienceValue = editedData?.experience ?? "";
+        if (Array.isArray(experienceValue) && experienceValue.length > 0 && typeof experienceValue[0] === 'object') {
+            experienceValue = experienceValue.map(job => {
+                const title = job?.title || '';
+                const company = job?.company || '';
+                const location = job?.location || '';
+                const period = job?.period || '';
+                const responsibilities = Array.isArray(job?.responsibilities)
+                    ? job.responsibilities.map(r => `- ${r}`).join("\n")
+                    : (job?.responsibilities || '');
+                return `Title: ${title}\nCompany: ${company}\nLocation: ${location}\nPeriod: ${period}\nResponsibilities:\n${responsibilities}`;
+            }).join("\n\n---\n\n");
+        }
+        else if (typeof experienceValue !== 'string') {
+           experienceValue = "";
+        }
+
+        return (
+            <textarea
+                name="experience"
+                value={experienceValue}
+                onChange={(e) => { setEditedData({ ...editedData, experience: e.target.value }); }}
+                rows={10}
+                className="edit-area"
+                placeholder="Experience details (e.g., Title: ..., Company: ..., Responsibilities: - ...)"
+                disabled={loading || paymentLoading} // Disable while loading payment too
+            />
+        );
+    };
+
+
+    // --- View Renderers ---
+
+    const renderLandingPage = () => {
+        // Modified Hero and CTA button onClick to check payment status if user exists
+        const getStartedAction = () => {
+             if (user) {
+                 paymentCompleted ? setView("app") : setView("payment")
+             } else {
+                 setView("auth")
+             }
+        };
+        return (
+            <div className="landing-page">
+                <Header user={user} onLogout={handleLogout} onLoginClick={() => setView('auth')} />
+                <main>
+                     <Hero user={user} onGetStartedClick={getStartedAction} />
+                    <PricingSection onSelectPlan={handleSelectPlan} /> {/* Use handler */}
+                    <div className="features-section">
+                        <BeatTheBots />
+                        <HowToUse />
+                    </div>
+                    <div className="cta-section">
+                        <h2>Ready to land your dream job?</h2>
+                        <button className="cta-button" onClick={getStartedAction}>
+                            {user ? (paymentCompleted ? "Go To App" : "Choose Plan & Pay") : "Get Started Now"}
+                        </button>
+                    </div>
+                </main>
+                <Footer />
+            </div>
+        );
+    };
+
+    const renderAuthUI = () => {
+        // Completed the missing part of the Auth UI
+        return (
+            <div className="auth-page">
+                <Header user={user} onLogout={handleLogout} onLoginClick={() => setView('auth')} />
+                <div className="auth-container">
+                    <div className="auth-card">
+                        <h2>
+                            {authMode === "login" ? "Login"
+                             : authMode === "register" ? "Create Account"
+                             : "Reset Password"}
+                        </h2>
+
+                        {authError && <div className="error-toast">{authError}</div>}
+                        {successMessage && !authLoading && <div className="success-toast">{successMessage}</div>}
+                        {authLoading && <div className="loader">Processing...</div>}
+
+                        {authMode === "resetPassword" ? (
+                            <form onSubmit={handleResetPassword} className="auth-form">
+                                <div className="form-field">
+                                    <label htmlFor="email">Email</label>
+                                    <input type="email" id="email" name="email" value={authFormData.email} onChange={handleAuthChange} required disabled={authLoading} />
+                                </div>
+                                <div className="button-group auth-buttons">
+                                    <button type="submit" disabled={authLoading} className="auth-btn">
+                                        {authLoading ? "Sending..." : "Send Reset Email"}
+                                    </button>
+                                    <button type="button" onClick={() => { setAuthMode("login"); setAuthError(""); setSuccessMessage(""); }} disabled={authLoading} className="secondary-btn">
+                                        Back to Login
+                                    </button>
+                                </div>
+                            </form>
+                        ) : ( // Login or Register Mode
+                            <>
+                                <form onSubmit={authMode === "login" ? handleLogin : handleRegister} className="auth-form">
+                                    <div className="form-field">
+                                        <label htmlFor="email">Email</label>
+                                        <input type="email" id="email" name="email" value={authFormData.email} onChange={handleAuthChange} required disabled={authLoading} />
+                                    </div>
+                                    <div className="form-field">
+                                        <label htmlFor="password">Password</label>
+                                        <input type="password" id="password" name="password" value={authFormData.password} onChange={handleAuthChange} required disabled={authLoading} />
+                                    </div>
+                                    <div className="button-group auth-buttons">
+                                        <button type="submit" disabled={authLoading} className="auth-btn">
+                                            {authLoading ? "Processing..." : (authMode === "login" ? "Login" : "Register")}
+                                        </button>
+                                        <button type="button" onClick={handleGoogleSignIn} disabled={authLoading} className="google-btn">
+                                            <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512"><path fill="currentColor" d="M488 261.8C488 403.3 381.5 512 244 512 109.8 512 0 402.2 0 256S109.8 0 244 0c73 0 135.3 29.7 181.4 78.6l-65.5 63.6C327.4 111.8 289.1 96 244 96c-88.6 0-160.1 71.7-160.1 160s71.5 160 160.1 160c97.1 0 131.2-61.7 135.8-94.2H244v-74.6h236.6c4.8 26.2 7.4 54.5 7.4 84.6z"/></svg>
+                                            Sign in with Google
+                                        </button>
+                                    </div>
+                                </form>
+                                <div className="auth-toggle">
+                                    {authMode === "login" ? (
+                                        <>
+                                            Don't have an account?{" "}
+                                            <button onClick={() => { setAuthMode("register"); setAuthError(""); setSuccessMessage(""); }} disabled={authLoading} className="link-button">Register here</button>
+                                            <br />
+                                            <button onClick={() => { setAuthMode("resetPassword"); setAuthError(""); setSuccessMessage(""); }} disabled={authLoading} className="link-button">Forgot Password?</button>
+                                        </>
+                                    ) : ( // Register Mode
+                                        <>
+                                            Already have an account?{" "}
+                                            <button onClick={() => { setAuthMode("login"); setAuthError(""); setSuccessMessage(""); }} disabled={authLoading} className="link-button">Login here</button>
+                                        </>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                         <div className="back-to-home">
+                           <button onClick={() => setView('landing')} disabled={authLoading} className="link-button">Back to Home</button>
+                        </div>
+                    </div>
+                </div>
+                <Footer />
+            </div>
+        );
+    };
+
+    // New Renderer for Payment Page
+    const renderPaymentPage = () => {
+         const amount = selectedPlan === 'premium' ? PREMIUM_PRICE : RESUME_PRICE;
+
+         return (
+             <div className="payment-page"> {/* Add CSS for .payment-page if needed */}
+                <Header user={user} onLogout={handleLogout} onLoginClick={() => setView('auth')} />
+                 <div className="container">
+                    <h1>Complete Your Purchase</h1>
+                     {paymentLoading && <div className="loader">Processing... Please wait.</div>}
+                     {paymentError && <div className="error-toast">{paymentError}</div>}
+                     {successMessage && <div className="success-toast">{successMessage}</div>}
+
+                     {/* Show pricing selection if no plan is selected yet */}
+                     {!selectedPlan && !paymentLoading && (
+                         <>
+                            <p className="subheading">Please select a plan to continue.</p>
+                            <PricingSection onSelectPlan={handleSelectPlan} />
+                         </>
+                     )}
+
+                     {/* Show PayPal button if a plan is selected */}
+                     {selectedPlan && !paymentLoading && (
+                         <div className="payment-details form"> {/* Reuse form styling */}
+                             <h2>Confirm Payment</h2>
+                             <p>You have selected the <strong>{selectedPlan}</strong> plan.</p>
+                             <p>Amount: <strong>${amount.toFixed(2)} {CURRENCY_CODE}</strong></p>
+                             <hr/>
+                              <p>Click the button below to complete your payment securely with PayPal.</p>
+                             <PayPalButton
+                                 amount={amount}
+                                 planType={selectedPlan}
+                                 onSuccess={handlePaymentSuccess}
+                                 onError={handlePaymentError}
+                                 onCancel={handlePaymentCancel}
+                              />
+                             <button onClick={() => setSelectedPlan(null)} disabled={paymentLoading} className="secondary-btn" style={{marginTop: '1rem'}}>Change Plan</button>
+                         </div>
+                     )}
+                      <div className="back-to-home" style={{marginTop: '2rem'}}>
+                           <button onClick={() => setView('landing')} disabled={paymentLoading} className="link-button">Cancel and Back to Home</button>
+                        </div>
+                 </div>
+                 <Footer />
+             </div>
+         );
+    };
+
+
+    const renderAppContent = () => {
+        // Main app content (form and preview) - Requires paymentCompleted to be true
+        // Basic check - this view should only be rendered if paymentCompleted is true due to main router logic
+        if (!paymentCompleted) {
+             // This case should ideally not be reached if routing logic is correct, but acts as a safeguard
+             console.warn("Attempted to render app content without payment completed. Redirecting.");
+             setView('payment'); // Redirect back to payment
+             return <div className="loader">Checking subscription...</div>; // Show loader while redirecting
+        }
+
+        return (
+             <> {/* Use fragment */}
+                <Header user={user} onLogout={handleLogout} onLoginClick={() => setView('auth')} />
+                <div className="container">
+                    <h1>AI Resume Tailor</h1>
+                     {/* Display subscription info */}
+                     {subscriptionData && (
+                         <div className="subscription-info success-toast" style={{textAlign: 'left'}}>
+                             <p><strong>Current Plan:</strong> {subscriptionData.plan?.toUpperCase()}</p>
+                             {subscriptionData.plan === 'standard' &&
+                                 <p><strong>Generations Used:</strong> {subscriptionData.usageCount || 0} / 1</p>
+                             }
+                             {/* Add expiration date display if applicable */}
+                         </div>
+                     )}
+                    <p className="subheading">Input your details and the job description to generate a tailored resume.</p>
+
+                    {error && <div className="error-toast">{error}</div>}
+                    {successMessage && !loading && <div className="success-toast">{successMessage}</div>}
+
+                    {/* Form Stage */}
+                    {stage === "form" && (
+                        <form className="form" onSubmit={(e) => e.preventDefault()}>
+                            {/* ... (Keep All your existing form fields: Name, Email, Phone, LinkedIn, Education, Experience, Skills, Certs, Lang, Extra, Job Desc) ... */}
+                            <div className="form-field">
+                                <label htmlFor="name">Name</label>
+                                <textarea id="name" name="name" value={formData.name} onChange={handleChange} rows="1" required disabled={loading || paymentLoading} />
+                            </div>
+                            <div className="form-field">
+                                <label htmlFor="email">Email</label>
+                                <textarea id="email" name="email" value={formData.email} onChange={handleChange} rows="1" disabled={loading || paymentLoading} />
+                            </div>
+                            <div className="form-field">
+                                <label htmlFor="phone">Phone</label>
+                                <textarea id="phone" name="phone" value={formData.phone} onChange={handleChange} rows="1" disabled={loading || paymentLoading} />
+                             </div>
+                             <div className="form-field">
+                                <label htmlFor="linkedin">LinkedIn Profile URL (Optional)</label>
+                                <textarea id="linkedin" name="linkedin" value={formData.linkedin} onChange={handleChange} rows="1" disabled={loading || paymentLoading} />
+                            </div>
+                            <hr/>
+                            <div className="form-field">
+                                <label htmlFor="education">Education (List each qualification/degree on a new line)</label>
+                                <textarea id="education" name="education" value={formData.education} onChange={handleChange} rows="4" placeholder="e.g.,&#10;B.Sc. Computer Science - University Name - City, State - 2020&#10;M.Sc. Data Science - Another University - City, State - 2022" disabled={loading || paymentLoading} />
+                            </div>
+                            <hr/>
+                            <div className="form-field">
+                                <label htmlFor="experience">Experience (Separate jobs with blank lines. Use bullet points for responsibilities/achievements)</label>
+                                <textarea id="experience" name="experience" value={formData.experience} onChange={handleChange} rows="10" placeholder="e.g.,&#10;Software Engineer - Tech Company - City, State - Jan 2021-Present&#10;- Developed feature X using React and Node.js&#10;- Improved API performance by 20%&#10;&#10;Intern - Another Org - City, State - Jun 2020-Aug 2020&#10;- Assisted senior developers with testing..." disabled={loading || paymentLoading} />
+                            </div>
+                             <hr/>
+                            <div className="form-field">
+                                <label htmlFor="skills">Skills (Comma-separated)</label>
+                                <textarea id="skills" name="skills" value={formData.skills} onChange={handleChange} rows="3" placeholder="e.g., JavaScript, React, Node.js, Python, SQL, AWS, Project Management, Communication" disabled={loading || paymentLoading} />
+                             </div>
+                            <hr/>
+                            <div className="form-field">
+                                <label htmlFor="certifications">Certifications (List each on a new line, Optional)</label>
+                                <textarea id="certifications" name="certifications" value={formData.certifications} onChange={handleChange} rows="2" placeholder="e.g., AWS Certified Developer - Associate" disabled={loading || paymentLoading} />
+                            </div>
+                            <div className="form-field">
+                                <label htmlFor="languages">Languages (Comma-separated, Optional)</label>
+                                <textarea id="languages" name="languages" value={formData.languages} onChange={handleChange} rows="1" placeholder="e.g., English (Native), Spanish (Fluent)" disabled={loading || paymentLoading} />
+                             </div>
+                             <div className="form-field">
+                                <label htmlFor="extracurricular">Extracurricular Activities/Projects (List each on a new line, Optional)</label>
+                                <textarea id="extracurricular" name="extracurricular" value={formData.extracurricular} onChange={handleChange} rows="3" placeholder="e.g., Personal Portfolio Website (link), Volunteer Tutor" disabled={loading || paymentLoading} />
+                            </div>
+                             <hr/>
+                            <div className="form-field">
+                                <label htmlFor="jobDescription">Target Job Description (Paste the full description here)</label>
+                                <textarea id="jobDescription" name="jobDescription" value={formData.jobDescription} onChange={handleChange} rows="10" required placeholder="Paste the job description you are applying for..." disabled={loading || paymentLoading} />
+                            </div>
+
+
+                            <div className="button-group form-buttons">
+                                {/* Disable generate button if loading or if standard plan usage limit reached */}
+                                <button
+                                    onClick={handleGenerateResume}
+                                    disabled={loading || paymentLoading || (subscriptionData?.plan === 'standard' && (subscriptionData?.usageCount || 0) >= 1)}
+                                    className="generate-btn"
+                                    title={ (subscriptionData?.plan === 'standard' && (subscriptionData?.usageCount || 0) >= 1) ? "Standard plan limit reached" : "" }
+                                >
+                                    {loading ? "Generating..." : "Generate Resume"}
+                                </button>
+                                <button type="button" onClick={handleReset} disabled={loading || paymentLoading} className="reset-btn">Reset Form</button>
+                            </div>
+                        </form>
+                    )}
+
+                    {/* Preview Stage */}
+                    {stage === "preview" && editedData && (
+                        <div className="resume-card">
+                             <h2>Preview & Edit Generated Resume</h2>
+                            <p>Review the AI-generated content below. Make any necessary edits directly in the text areas before downloading.</p>
+                            {/* ... (Keep All existing preview fields: Header, Summary, Experience, Education, Skills, Certs, Lang, Extra) ... */}
+                             <div className="resume-header">
+                                <label>Name</label>
+                                <input type="text" name="name" value={editedData.name || ''} onChange={handleEditedChange} className="edit-field name-field" disabled={loading || paymentLoading} />
+
+                                <label>Role/Title (Optional)</label>
+                                <input type="text" name="role" value={editedData.role || ''} onChange={handleEditedChange} className="edit-field role-field" placeholder="e.g., Software Engineer" disabled={loading || paymentLoading} />
+
+                                <label>Contact Info</label>
+                                <div className="contact-info">
+                                    <input type="text" name="email" value={editedData.email || ''} onChange={handleEditedChange} className="edit-inline" placeholder="Email" disabled={loading || paymentLoading} />
+                                    <input type="text" name="phone" value={editedData.phone || ''} onChange={handleEditedChange} className="edit-inline" placeholder="Phone" disabled={loading || paymentLoading} />
+                                    <input type="text" name="linkedin" value={editedData.linkedin || ''} onChange={handleEditedChange} className="edit-inline" placeholder="LinkedIn URL" disabled={loading || paymentLoading} />
+                                    {editedData.location && <input type="text" name="location" value={editedData.location || ''} onChange={handleEditedChange} className="edit-inline" placeholder="Location (City, State)" disabled={loading || paymentLoading} />}
+                                </div>
+                            </div>
+                            <hr/>
+                            {editedData.summary && (
+                                <section>
+                                    <h3>Summary/Objective</h3>
+                                    {renderTextArea("summary", 4)}
+                                </section>
+                            )}
+                            <section>
+                                <h3>Experience</h3>
+                                {renderExperienceEditor()}
+                            </section>
+                            <section>
+                                <h3>Education</h3>
+                                {renderTextArea("education", 4)}
+                            </section>
+                            <section>
+                                <h3>Skills</h3>
+                                {renderTextArea("skills", 3)}
+                            </section>
+                            {editedData.certifications && (
+                                <section>
+                                    <h3>Certifications</h3>
+                                    {renderTextArea("certifications", 2)}
+                                </section>
+                            )}
+                            {editedData.languages && (
+                                <section>
+                                    <h3>Languages</h3>
+                                    {renderTextArea("languages", 1)}
+                                </section>
+                            )}
+                            {editedData.extracurricular && (
+                                <section>
+                                    <h3>Extracurricular/Projects</h3>
+                                    {renderTextArea("extracurricular", 3)}
+                                </section>
+                            )}
+
+                            <div className="button-group preview-buttons">
+                                <button onClick={handleDownloadPDF} disabled={loading || paymentLoading} className="download-btn">
+                                    {loading ? "Downloading..." : "Download PDF"}
+                                </button>
+                                <button onClick={() => setStage("form")} disabled={loading || paymentLoading} className="back-btn">Back to Form</button>
+                                <button type="button" onClick={handleReset} disabled={loading || paymentLoading} className="reset-btn">Start Over</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {(loading || paymentLoading) && <div className="loader">Processing your request...</div>}
+                </div>
+                <Footer />
+            </> // End fragment
+        );
+    };
+
+
+    // --- Main Render Logic ---
+    const renderContent = () => {
+        if (authLoading || (user && paymentLoading)) {
+             return <div className="loader">Loading Authentication / Subscription...</div>;
+        }
+
+        switch (view) {
+            case 'landing':
+                return renderLandingPage();
+            case 'auth':
+                return renderAuthUI();
+            case 'payment':
+                 // Ensure user is logged in to see payment page
+                 return user ? renderPaymentPage() : renderAuthUI();
+            case 'app':
+                 // Ensure user is logged in and has paid to see app page
+                 return user && paymentCompleted ? renderAppContent() :
+                        user ? renderPaymentPage() : // If logged in but not paid, show payment
+                        renderAuthUI(); // If not logged in, show auth
+            default:
+                return renderLandingPage(); // Fallback
+        }
+    };
+
+    return (
+        <> {/* Use fragment to wrap ribbon and main content */}
+             <TopRibbon /> {/* Display ribbon at the top */}
+             <div className="App">
+                {renderContent()}
+             </div>
+        </>
+    );
+}
+
+export default App;
