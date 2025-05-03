@@ -1,0 +1,556 @@
+`import os
+import json
+import boto3
+import time
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from docx import Document
+from io import BytesIO
+import markdown
+import logging
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS clients with specified region
+# Ensure the region supports the model and knowledge base
+# Using us-east-1 as specified, good default for Bedrock
+BEDROCK_REGION = os.environ.get('AWS_REGION', 'us-east-1') # Use Lambda's region or default
+bedrock_config = Config(region_name=BEDROCK_REGION)
+bedrock_runtime = boto3.client('bedrock-runtime', config=bedrock_config)
+bedrock_agent_runtime = boto3.client('bedrock-agent-runtime', config=bedrock_config)
+s3 = boto3.client('s3', region_name=BEDROCK_REGION) # Use same region for S3 for consistency
+
+
+def lambda_handler(event, context):
+    try:
+        # --- Configuration ---
+        knowledge_base_id = os.environ.get('KNOWLEDGE_BASE_ID')
+        # Default model, make sure it's available in your region
+        model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.titan-text-express-v1') 
+        s3_bucket = os.environ.get('S3_BUCKET')
+        
+        # Validate essential configuration
+        if not knowledge_base_id:
+            raise ValueError("Environment variable KNOWLEDGE_BASE_ID is not set.")
+        if not s3_bucket:
+             raise ValueError("Environment variable S3_BUCKET is not set.")
+        if not model_id:
+             raise ValueError("Environment variable BEDROCK_MODEL_ID is not set.")
+
+
+        logger.info(f"Using Knowledge Base ID: {knowledge_base_id}")
+        logger.info(f"Using Model ID: {model_id}")
+        logger.info(f"Using S3 Bucket: {s3_bucket}")
+
+        # --- Input Processing ---
+        try:
+            if isinstance(event.get('body'), str):
+                 user_input = json.loads(event['body'])
+            else:
+                 user_input = event.get('body', {}) # Handle potential non-string body if invoked differently
+
+            project_name = user_input.get('project_name')
+            project_details = user_input.get('project_details')
+
+            if not project_name or not project_details:
+                raise ValueError("Missing 'project_name' or 'project_details' in request body.")
+            logger.info(f"Received project: {project_name}")
+
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+             logger.error(f"Input Error: {str(e)}")
+             return {
+                 'statusCode': 400,
+                 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                 'body': json.dumps({'message': f'Bad Request: {str(e)}'})
+             }
+
+
+        # --- 1. Retrieve Context from Knowledge Base ---
+        logger.info("Retrieving context from Knowledge Base...")
+        retrieval_query = f"Information regarding the architecture project: {project_name}. Details: {project_details}"
+        try:
+            retrieval_response = bedrock_agent_runtime.retrieve(
+                knowledgeBaseId=knowledge_base_id,
+                retrievalQuery={'text': retrieval_query},
+                retrievalConfiguration={
+                    'vectorSearchConfiguration': {'numberOfResults': 5}
+                }
+            )
+            retrieved_passages = [
+                result['content']['text']
+                for result in retrieval_response.get('retrievalResults', [])
+                if 'content' in result and 'text' in result['content']
+            ]
+            knowledge_base_context = "\n\n".join(retrieved_passages)
+            logger.info(f"Retrieved {len(retrieved_passages)} passages from KB.")
+            # Optional: Log context for debugging (can be verbose)
+            # logger.debug(f"KB Context: {knowledge_base_context[:500]}...") 
+
+        except ClientError as e:
+             logger.error(f"Knowledge Base Retrieval Error: {str(e)}")
+             # Provide more specific feedback if possible
+             error_code = e.response.get('Error', {}).get('Code')
+             if error_code == 'ResourceNotFoundException':
+                  error_message = f"Knowledge Base '{knowledge_base_id}' not found."
+             else:
+                   error_message = f"Could not retrieve from Knowledge Base: {str(e)}"
+             return {
+                 'statusCode': 500,
+                 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                 'body': json.dumps({'message': error_message})
+             }
+
+
+        # --- 2. Define Document Sections and Prompts ---
+        # Updated structure with improved sections and subsections
+        sections = [
+             ('1. Introduction', '''
+             Create a comprehensive introduction with the following clearly labeled subsections:
+             
+             1.1 Purpose
+             [The purpose of writing Architecture Overview for this project.]
+             
+             1.2 Scope
+             [A brief description of the scope of this Architecture Overview for the project.]
+             
+             1.3 Intended Audience
+             [Provide a brief description of the audience for whom this Architecture Overview is intended. This helps readers identify whether it is a document for their use and helps prevent the document from being used inappropriately.]
+             
+             1.4 Overview
+             [Describe what the rest of the Architecture Overview contains and explain how the document is organized.]
+             
+             Use professional and clear language appropriate for a technical document. Base your content on the project details provided.
+             '''),
+             
+             ('2. Scope', '''
+             Create two subsections clearly marked: 
+             i. Scope (list 5 key items as bullet points)
+             ii. Out-of-Scope (list 3 key items as bullet points)
+             
+             Use markdown lists and ensure the items are relevant to the project details.
+             '''),
+             
+             ('3. Requirements', '''
+             Begin with a brief introduction about the requirements section.
+             
+             Then create two subsections clearly marked:
+             i. Functional Requirements: Present as a markdown table with columns: | ID | Description | Priority (High/Medium/Low) |
+             ii. Non-Functional Requirements: Present as a markdown table with columns: | Category | Requirement | Metric/Target |
+             
+             Populate with relevant examples based on the project details and context.
+             '''),
+             
+             ('4. System Context', '''
+             Begin with this introduction:
+             "This section describes the external IT services the application interacts with as well as the user population. Read it if you need to understand which other applications or infrastructure services this application has dependencies with or if you want to understand the business impact and relevance of the application from the user perspective."
+             
+             Then create three subsections clearly marked:
+             i. System Context Diagram Code: Provide a mermaid diagram code for a system context diagram. The diagram should show the main system in the center with all external actors and systems it interacts with. Use the mermaid.js syntax for flowcharts. Include clear explanations of the different components.
+             
+             Example syntax (adapt to your needs):
+             ```mermaid
+             graph TD
+                 A[User] -->|Uses| B[Main System]
+                 B -->|Connects to| C[External API]
+                 D[Admin] -->|Manages| B
+             ```
+             
+             ii. Architecture Overview Diagram: Create a separate mermaid diagram code showing a high-level architectural overview of the system with major components and their relationships. This should be more detailed than the system context diagram and show the internal structure.
+             
+             iii. Actors/External Services Table: Present as a markdown table explaining actors/external services and their primary functions/interactions with the system. Columns: | Actor/Service | Description/Function |
+             '''),
+             
+             ('5. Component Model', '''
+             Begin with this introduction:
+             "This section describes the logical components of the application infrastructure. Read it if you want to understand what are the basic infrastructure components and services that make up the application (for example: does it use a web server or does it use a database?)"
+             
+             Then create three subsections clearly marked:
+             i. Component Diagram Code: Provide a mermaid diagram code representing the component model of the system. Show major components, their interfaces, and relationships. Use the mermaid.js syntax for component diagrams.
+             
+             Example syntax (adapt to your needs):
+             ```mermaid
+             graph TD
+                 A[Component A] -->|Uses| B[Component B]
+                 B -->|Stores data in| C[Database]
+             ```
+             
+             ii. Component Description: Describe the major logical components of the system (e.g., Web UI, API Gateway, Business Logic Service, Data Store). Provide a brief description of each.
+             
+             iii. Component Interactions: Detail the key interactions between these components for major use cases. Explain the data flow or sequence of calls.
+             '''),
+             
+             ('6. Physical Operational Model', '''
+             Begin with this introduction:
+             "This section describes how the logical components are distributed onto physical nodes such as physical servers and/or virtual machines. Read it if you need to understand which server hostnames are part of this application and where they are located or what type of hardware configuration they have."
+             
+             Then create three subsections clearly marked:
+             i. Deployment Diagram Code: Provide a mermaid diagram code representing the physical deployment model. Show physical/virtual servers, cloud services, and how components are distributed.
+             
+             Example syntax (adapt to your needs):
+             ```mermaid
+             graph TD
+                 A[Web Server VM] -->|Connects to| B[Application Server VM]
+                 B -->|Uses| C[Database Server]
+                 D[Load Balancer] -->|Routes to| A
+             ```
+             
+             ii. Deployment Architecture: Explain the proposed physical or cloud deployment architecture (e.g., AWS services like EC2, Lambda, RDS, VPC configuration, regions, availability zones).
+             
+             iii. Operational Considerations: Describe key operational aspects like monitoring, logging, backups, disaster recovery strategy, and scaling approach.
+             '''),
+             
+             ('7. Architectural Decisions', '''
+             Begin with this introduction:
+             "This section documents the major design solutions that have been applied to the application infrastructure as well as their alternatives and what motivated those choices. Read it if you need to understand things like 'why did we virtualize this application component?' or 'why are we using specific technologies instead of alternatives?'"
+             
+             Create a section containing a markdown table listing key architectural decisions made for this project. Use the format:
+             
+             | Decision ID | Decision | Rationale | Implications |
+             |------------|----------|-----------|--------------|
+             | AD-001 | [Decision text] | [Rationale text] | [Implications text] |
+             | AD-002 | [Decision text] | [Rationale text] | [Implications text] |
+             
+             Include at least 4-5 key decisions relevant to the project.
+             
+             For each major architectural decision, also create a subsection with a detailed decision record following this template:
+             
+             ## 7.X Architectural Decision [ID]
+             
+             **Area of concern:** [Area]
+             
+             **Architectural Decision:** [Summary of the decision made]
+             
+             **ID:** [A unique identifier]
+             
+             **Issue or Problem Statement:** [A short description of the problem]
+             
+             **Assumptions:** [What is believed to be true about the context]
+             
+             **Motivation:** [Why this decision is important]
+             
+             **Alternatives:** [A list of alternatives and explanations]
+             
+             **Decision:** [The decision taken]
+             
+             **Justification:** [Why the decision was made]
+             
+             **Implications:** [What impact the decision will have]
+             
+             **Derived requirements:** [Requirements generated by this decision]
+             
+             **Related Decisions:** [A list of related decisions]
+             '''),
+             
+             ('8. Viability Assessment', '''
+             Create a table summarizing Risks, Assumptions, Issues, and Dependencies (RAID log).
+             
+             Use markdown table format with columns:
+             | ID | Type (Risk/Assumption/Issue/Dependency) | Description | Impact (High/Medium/Low) | Mitigation/Action |
+             
+             Include at least 6-8 relevant items covering all four categories (Risks, Assumptions, Issues, Dependencies).
+             '''),
+             
+             ('9. Appendix', '''
+             List potential supporting materials, references, or glossary terms relevant to the project.
+             
+             Include:
+             1. A glossary of technical terms used in the document
+             2. References to relevant standards or patterns used
+             3. Links to additional documentation or resources
+             4. Version history of the document
+             
+             Use a markdown list for each section.
+             ''')
+        ]
+
+        generated_doc_content = {}
+
+        # --- 3. Generate Content for Each Section ---
+        logger.info("Generating document sections using Bedrock...")
+        BEDROCK_CALL_DELAY = 5 # Start with 5 seconds, adjust if needed
+        for section_title, instruction in sections:
+            logger.info(f"Generating section: {section_title}")
+            prompt = f"""
+You are an expert Enterprise Architect generating a section for an architecture document for the project '{project_name}'.
+Project Description: {project_details}
+
+Leverage the following relevant context retrieved from our knowledge base:
+<knowledge_base_context>
+{knowledge_base_context if knowledge_base_context else "No specific context was retrieved from the knowledge base."}
+</knowledge_base_context>
+
+Your task is to generate the content ONLY for the section: "{section_title}".
+Follow this specific instruction carefully: {instruction}
+
+Format your response using GitHub-flavored Markdown. Pay special attention to instructions requesting tables, lists, or diagram code.
+Ensure the content is technically accurate, professional, and directly addresses the instruction.
+For any diagram code sections, ensure you provide properly formatted mermaid.js code that can be rendered.
+Do not add any introductory phrases like "Here is the section..." or "Content for section...". Just provide the content for "{section_title}".
+"""
+
+            # --- ** Bedrock InvokeModel Call ** ---
+            # Construct the body according to the specific model's API requirements.
+            # For Titan Text Express (example):
+            body_params = {
+                "inputText": prompt,
+                "textGenerationConfig": {
+                    "maxTokenCount": 2048,
+                    "stopSequences": [],
+                    "temperature": 0.5,
+                    "topP": 0.9
+                 }
+            }
+            # --- ** IF USING A DIFFERENT MODEL (like Claude or Nova Pro), ADJUST `body_params` ** ---
+            # Example for Anthropic Claude:
+            # body_params = {
+            #     "prompt": f"\n\nHuman:{prompt}\n\nAssistant:",
+            #     "max_tokens_to_sample": 2048,
+            #     "temperature": 0.5,
+            #     "top_p": 0.9,
+            #     # Add other Claude-specific params like stop_sequences if needed
+            # }
+            # Example for Amazon Nova Pro (Based on your original code and likely structure):
+            # body_params = {
+            #      "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+            #      # Parameters OUTSIDE messages array
+            #      "max_tokens": 2048,  # Correct parameter name might be maxTokenCount or max_tokens_to_sample depending on model family
+            #      "temperature": 0.5,
+            #      "top_p": 0.9 # Re-include if confirmed supported outside 'messages' for Nova Pro
+            # }
+
+            try:
+                response = bedrock_runtime.invoke_model(
+                     modelId=model_id,
+                     body=json.dumps(body_params),
+                     contentType='application/json',
+                     accept='application/json'
+                )
+                response_body = json.loads(response['body'].read())
+
+                # --- Extract text based on model response structure ---
+                generated_text = ""
+                if model_id.startswith('amazon.titan'):
+                     generated_text = response_body.get('results')[0].get('outputText')
+                elif model_id.startswith('anthropic.claude'):
+                     generated_text = response_body.get('completion')
+                # Add extraction logic for other model families (Cohere, AI21, Meta, Nova Pro) as needed
+                elif model_id.startswith('amazon.nova') or model_id.startswith('amazon.'): # Assuming Nova Pro follows a similar pattern OR check specific response format
+                     # Check the actual response structure for Nova Pro if different
+                     # It might be under 'content' as in your original code:
+                     if 'content' in response_body and isinstance(response_body['content'], list) and len(response_body['content']) > 0:
+                          if 'text' in response_body['content'][0]:
+                              generated_text = response_body['content'][0]['text']
+                     # Fallback or alternative structure checks might be needed here based on actual Nova Pro output
+                     elif 'results' in response_body and isinstance(response_body['results'], list) and len(response_body['results']) > 0:
+                         generated_text = response_body['results'][0].get('outputText') # Guessing another possible structure
+
+
+                if not generated_text:
+                     logger.warning(f"No text generated for section: {section_title}. Response: {response_body}")
+                     generated_text = f"Content generation failed for this section." # Placeholder
+
+                generated_doc_content[section_title] = generated_text.strip()
+
+            except ClientError as e:
+                logger.error(f"Bedrock InvokeModel Error for section {section_title}: {str(e)}")
+                # Decide if you want to fail the whole request or just skip the section
+                generated_doc_content[section_title] = f"Error generating content for this section: {str(e)}"
+                # Optional: re-raise if one section failure should stop everything
+                # raise e 
+            except Exception as e: # Catch broader errors during generation/parsing
+                 logger.error(f"Error processing section {section_title}: {str(e)}")
+                 generated_doc_content[section_title] = f"Error processing this section: {str(e)}"
+            # --- ADD DELAY HERE ---
+            logger.info(f"Waiting for {BEDROCK_CALL_DELAY} seconds before next section...")
+            time.sleep(BEDROCK_CALL_DELAY) # Pause execution
+
+        # --- 4. Create HTML Preview with Mermaid Support ---
+        logger.info("Generating HTML preview...")
+        preview_html = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{project_name} - Architecture Document Preview</title>
+            <style>
+                body {{ font-family: sans-serif; line-height: 1.6; padding: 20px; max-width: 900px; margin: auto; }}
+                h1 {{ color: #2a2a2a; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+                h2 {{ color: #3a3a3a; margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 5px; }}
+                h3 {{ color: #4a4a4a; margin-top: 20px; }} /* For subsections */
+                code {{ background-color: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-family: monospace; }}
+                pre {{ background-color: #f0f0f0; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+                table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; border: 1px solid #ddd; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+                th {{ background-color: #f2f2f2; font-weight: bold; }}
+                ul, ol {{ margin-left: 20px; }}
+                li {{ margin-bottom: 5px; }}
+                .error {{ color: red; font-style: italic; }}
+                .mermaid {{ max-width: 100%; margin: 20px 0; }}
+            </style>
+            <!-- Include Mermaid library for diagram rendering -->
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.0.2/mermaid.min.js"></script>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {{
+                    mermaid.initialize({{ startOnLoad: true }});
+                }});
+            </script>
+        </head>
+        <body>
+        """
+        preview_html = preview_html.format(project_name=project_name)
+        preview_html += f"<h1>{project_name} - Architecture Document (Preview)</h1>"
+
+        for section_title, content in generated_doc_content.items():
+            # Basic error check before conversion
+            if "Error generating content" in content or "Content generation failed" in content:
+                 html_content = f'<p class="error">{content}</p>'
+            else:
+                # Process mermaid diagrams - extract and prepare for rendering
+                # Look for mermaid code blocks and replace them with proper div elements
+                import re
+                # First, find all mermaid code blocks
+                mermaid_pattern = r'```mermaid\n(.*?)\n```'
+                # Using re.DOTALL to match across multiple lines
+                mermaid_matches = re.findall(mermaid_pattern, content, re.DOTALL)
+                
+                # Replace each mermaid code block with a proper mermaid div
+                for i, mermaid_code in enumerate(mermaid_matches):
+                    placeholder = f"MERMAID_DIAGRAM_{i}"
+                    content = content.replace(f"```mermaid\n{mermaid_code}\n```", placeholder)
+                
+                # Convert the modified markdown to HTML
+                html_content = markdown.markdown(content, extensions=['markdown.extensions.tables', 'markdown.extensions.fenced_code'])
+                
+                # Now replace the placeholders with actual mermaid divs
+                for i, mermaid_code in enumerate(mermaid_matches):
+                    placeholder = f"MERMAID_DIAGRAM_{i}"
+                    html_content = html_content.replace(placeholder, f'<div class="mermaid">{mermaid_code}</div>')
+                
+            preview_html += f"<h2>{section_title}</h2>\n{html_content}\n"
+
+        preview_html += "</body></html>"
+
+
+        # --- 5. Generate Word Document ---
+        logger.info("Generating Word document...")
+        doc = Document()
+        doc.add_heading(f"{project_name} - Architecture Document", level=0)
+        doc.add_paragraph(f"Generated on: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+        # Consider adding more metadata like project details here if needed
+        doc.add_page_break()
+
+        # Add Table of Contents placeholder (requires user interaction in Word)
+        doc.add_heading("Table of Contents", level=1)
+        doc.add_paragraph("(Update this field in Word to generate the Table of Contents)")
+        doc.add_page_break()
+
+        # Add content sections
+        # **IMPORTANT LIMITATION**: This adds the markdown as plain text.
+        # For formatted Word output (tables, lists), significant extra work is needed
+        # to parse the markdown and create corresponding docx elements.
+        # This is complex and often requires dedicated libraries or custom parsing.
+        for section_title, content in generated_doc_content.items():
+            doc.add_heading(section_title, level=1)
+            # Add the raw content as a paragraph. Markdown syntax will appear as text.
+            doc.add_paragraph(content)
+            # You might add page breaks between major sections if desired
+            # doc.add_page_break()
+
+        doc_buffer = BytesIO()
+        doc.save(doc_buffer)
+        doc_buffer.seek(0)
+
+
+        # --- 6. Upload Artifacts to S3 ---
+        logger.info("Uploading artifacts to S3...")
+        timestamp = str(int(time.time()))
+        # Sanitize project name for S3 key
+        safe_project_name = "".join(c if c.isalnum() or c in ['-', '_'] else '_' for c in project_name)
+        
+        preview_key = f"previews/{safe_project_name}_{timestamp}.html"
+        doc_key = f"documents/{safe_project_name}_{timestamp}.docx"
+
+        try:
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=preview_key,
+                Body=preview_html.encode('utf-8'), # Ensure encoding
+                ContentType='text/html; charset=utf-8'
+            )
+            logger.info(f"Uploaded HTML preview to s3://{s3_bucket}/{preview_key}")
+
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=doc_key,
+                Body=doc_buffer,
+                ContentType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            )
+            logger.info(f"Uploaded Word document to s3://{s3_bucket}/{doc_key}")
+        except ClientError as e:
+             logger.error(f"S3 Upload Error: {str(e)}")
+             return {
+                 'statusCode': 500,
+                 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+                 'body': json.dumps({'message': f'Failed to upload documents to S3: {str(e)}'})
+             }
+
+        # --- 7. Generate Presigned URLs ---
+        logger.info("Generating presigned URLs...")
+        try:
+            preview_url = s3.generate_presigned_url(
+                 'get_object',
+                 Params={'Bucket': s3_bucket, 'Key': preview_key},
+                 ExpiresIn=3600 # 1 hour
+            )
+            doc_url = s3.generate_presigned_url(
+                 'get_object',
+                 Params={'Bucket': s3_bucket, 'Key': doc_key},
+                 ExpiresIn=3600 # 1 hour
+            )
+        except ClientError as e:
+             logger.error(f"Presigned URL Generation Error: {str(e)}")
+             # Non-fatal, maybe return URLs as None or just log
+             preview_url = None
+             doc_url = None
+             # Depending on requirements, you might return an error here instead
+
+        # --- 8. Return Success Response ---
+        logger.info("Request completed successfully.")
+        return {
+            'statusCode': 200,
+            'headers': {
+                 'Content-Type': 'application/json',
+                 'Access-Control-Allow-Origin': '*' # Adjust for specific origins in production
+            },
+            'body': json.dumps({
+                 'message': 'Documents generated successfully.',
+                 'previewUrl': preview_url,
+                 'documentUrl': doc_url,
+                 'previewS3Key': f"s3://{s3_bucket}/{preview_key}", # Also useful
+                 'documentS3Key': f"s3://{s3_bucket}/{doc_key}"
+            })
+        }
+
+    except ValueError as ve: # Catch configuration/validation errors explicitly
+         logger.error(f"Configuration or Value Error: {str(ve)}", exc_info=True)
+         return {
+             'statusCode': 400, # Bad request due to config/input
+             'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'},
+             'body': json.dumps({'message': f'Configuration Error: {str(ve)}'})
+         }
+    except Exception as e:
+        # General catch-all for unexpected errors
+        logger.error(f"Unhandled Internal Server Error: {str(e)}", exc_info=True) # Log traceback
+        return {
+            'statusCode': 500,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*' # Adjust for specific origins
+            },
+            'body': json.dumps({
+                'message': f'Internal server error encountered: {str(e)}'
+            })
+        }
