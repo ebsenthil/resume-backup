@@ -1,0 +1,124 @@
+Architecture Document Generator: Lambda Functions & Coordination Flow
+Lambda Functions Required (9 total)
+
+Initiator Lambda - Starts the process and returns job ID
+Context Retrieval Lambda - Gets knowledge base information
+Section Generator Lambda - Generates document text sections
+System Context Diagram Lambda - Creates system context diagram
+Architecture Overview Diagram Lambda - Creates architecture overview diagram
+Component Model Diagram Lambda - Creates component model diagram
+Physical Deployment Diagram Lambda - Creates deployment diagram
+Document Assembly Lambda - Combines all sections and diagrams
+Status Checker Lambda - Returns job status to frontend
+
+Process Flow & Coordination
+Step 1: Initiation
+
+Frontend sends project details to API Gateway
+API Gateway invokes Initiator Lambda
+Initiator Lambda:
+
+Creates unique job ID
+Stores job metadata in DynamoDB (status="STARTED")
+Triggers Step Functions execution with job ID
+Returns job ID to frontend immediately
+
+
+
+Step 2: Context Retrieval
+
+Step Functions invokes Context Retrieval Lambda
+Context Retrieval Lambda:
+
+Queries Bedrock Knowledge Base
+Stores retrieved context in S3 under job ID path
+Updates DynamoDB (status="CONTEXT_RETRIEVED")
+
+
+
+Step 3: Parallel Section Generation
+
+Step Functions invokes Section Generator Lambda multiple times in parallel
+Each invocation handles different document sections
+Section Generator Lambda:
+
+Reads context from S3
+Generates specific section content using Bedrock
+Stores section in S3 under job ID path
+Updates DynamoDB (status="SECTIONS_X_COMPLETE")
+
+
+
+Step 4: Parallel Diagram Generation
+
+Step Functions invokes all diagram lambdas in parallel
+Each Diagram Lambda:
+
+Reads context and relevant sections from S3
+Generates professional diagram using Python libraries
+Stores SVG and PNG versions in S3 under job ID path
+Updates DynamoDB (status="DIAGRAM_X_COMPLETE")
+
+
+
+Step 5: Document Assembly
+
+Step Functions checks if all sections and diagrams are complete
+If complete, invokes Document Assembly Lambda
+Document Assembly Lambda:
+
+Retrieves all sections from S3
+Retrieves all diagrams from S3
+Assembles cohesive HTML document with SVG diagrams
+Assembles Word document with PNG diagrams
+Stores final documents in S3
+Updates DynamoDB (status="COMPLETE", includes document URLs)
+
+
+
+Step 6: Status Checking
+
+Frontend polls API Gateway with job ID
+API Gateway invokes Status Checker Lambda
+Status Checker Lambda:
+
+Checks job status in DynamoDB
+Returns status and document URLs when complete
+
+
+
+Coordination Mechanisms
+
+Step Functions:
+
+Manages overall workflow and state transitions
+Handles retries and error conditions
+Implements wait conditions between dependent steps
+
+
+DynamoDB:
+
+Stores job metadata and current status
+Includes timestamps for each stage
+Stores S3 paths to intermediate and final artifacts
+
+
+S3 Path Structure:
+/jobs/{job_id}/
+  /context/kb-context.json
+  /sections/
+    section-1.md
+    section-2.md
+    ...
+  /diagrams/
+    system-context.svg
+    system-context.png
+    architecture-overview.svg
+    ...
+  /final/
+    preview.html
+    document.docx
+
+Status Transition Flow:
+STARTED → CONTEXT_RETRIEVED → SECTIONS_IN_PROGRESS → SECTIONS_COMPLETE → 
+DIAGRAMS_IN_PROGRESS → DIAGRAMS_COMPLETE → ASSEMBLY_IN_PROGRESS → COMPLETE
